@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automatic DJ Mixer</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tone.js for audio processing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+    <!-- TensorFlow.js for Machine Learning -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+    <style>
+        /* Custom styles for a modern, dark theme */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .deck-canvas {
+            background-color: #1f2937; /* gray-800 */
+            border-radius: 0.5rem;
+            border: 1px solid #4b5563; /* gray-600 */
+        }
+        .btn-primary {
+            @apply bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed;
+        }
+        .btn-secondary {
+            @apply bg-red-600 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-red-700 transition-all duration-300;
+        }
+        /* Custom styling for the range input (crossfader) */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 8px;
+            cursor: pointer;
+            background: #4b5563; /* gray-600 */
+            border-radius: 5px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            height: 24px;
+            width: 24px;
+            border-radius: 50%;
+            background: #3b82f6; /* blue-500 */
+            cursor: pointer;
+            -webkit-appearance: none;
+            margin-top: -8px;
+            box-shadow: 0 0 5px rgba(59, 130, 246, 0.7);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl bg-gray-800 rounded-2xl shadow-2xl p-4 sm:p-6 md:p-8 space-y-4 md:space-y-6">
+        <!-- Header -->
+        <header class="text-center">
+            <h1 class="text-3xl md:text-4xl font-bold text-white tracking-tight">Automatic DJ Mixer</h1>
+            <p class="text-gray-400 mt-2">Load two tracks, and let the magic happen.</p>
+        </header>
+
+        <!-- ML Model Status -->
+        <div id="mlStatus" class="text-center text-yellow-400 bg-gray-700 p-2 rounded-lg">
+            Loading ML Genre Model...
+        </div>
+
+        <!-- Decks -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Deck A -->
+            <div id="deckA" class="bg-gray-700 p-4 rounded-lg space-y-3">
+                <h2 class="text-xl font-semibold text-center text-blue-400">Deck A</h2>
+                <input type="file" id="fileA" accept="audio/*" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"/>
+                <div id="statusA" class="text-center text-sm h-14 flex flex-col justify-center items-center">
+                    <span class="truncate block max-w-full">No track loaded</span>
+                </div>
+                <canvas id="visualizerA" class="w-full h-24 sm:h-32 deck-canvas"></canvas>
+            </div>
+
+            <!-- Deck B -->
+            <div id="deckB" class="bg-gray-700 p-4 rounded-lg space-y-3">
+                <h2 class="text-xl font-semibold text-center text-green-400">Deck B</h2>
+                <input type="file" id="fileB" accept="audio/*" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-600 file:text-white hover:file:bg-green-700 cursor-pointer"/>
+                <div id="statusB" class="text-center text-sm h-14 flex flex-col justify-center items-center">
+                    <span class="truncate block max-w-full">No track loaded</span>
+                </div>
+                <canvas id="visualizerB" class="w-full h-24 sm:h-32 deck-canvas"></canvas>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="bg-gray-700 p-4 rounded-lg space-y-4">
+            <h3 class="text-lg font-medium text-center">Master Controls</h3>
+            <!-- Crossfader -->
+            <div class="flex items-center gap-4">
+                <span class="font-bold text-blue-400">A</span>
+                <input type="range" id="crossfader" min="0" max="1" step="0.01" value="0.5" class="w-full">
+                <span class="font-bold text-green-400">B</span>
+            </div>
+            <!-- Action Buttons -->
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <button id="startMixBtn" class="btn-primary w-full sm:w-auto" disabled>Start Mix</button>
+                <button id="stopBtn" class="btn-secondary w-full sm:w-auto">Stop</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- DOM Element References ---
+            const fileA = document.getElementById('fileA');
+            const fileB = document.getElementById('fileB');
+            const statusA = document.getElementById('statusA');
+            const statusB = document.getElementById('statusB');
+            const visualizerA = document.getElementById('visualizerA');
+            const visualizerB = document.getElementById('visualizerB');
+            const crossfader = document.getElementById('crossfader');
+            const startMixBtn = document.getElementById('startMixBtn');
+            const stopBtn = document.getElementById('stopBtn');
+
+            // --- Canvas Setup ---
+            const ctxA = visualizerA.getContext('2d');
+            const ctxB = visualizerB.getContext('2d');
+            const canvasWidth = visualizerA.width;
+            const canvasHeight = visualizerA.height;
+
+            // --- Tone.js Setup ---
+            let playerA, playerB, crossFade, analyserA, analyserB;
+            let bpmA = 0, bpmB = 0;
+            let state = { A: { loaded: false }, B: { loaded: false } };
+
+            // --- ML Setup ---
+            let genreModel;
+            const YAMNET_MODEL_URL = 'https://storage.googleapis.com/tfhub-tfjs-modules/google/tfjs-model/yamnet/classification/1/default/1/model.json';
+            const mlStatus = document.getElementById('mlStatus');
+
+            // Initialize audio components
+            function initAudio() {
+                playerA = new Tone.Player().toDestination();
+                playerB = new Tone.Player().toDestination();
+                
+                // Route players through analysers for visualization
+                analyserA = new Tone.Analyser('waveform', 1024);
+                analyserB = new Tone.Analyser('waveform', 1024);
+
+                // Create the crossfade and connect everything
+                crossFade = new Tone.CrossFade().toDestination();
+                playerA.connect(analyserA);
+                analyserA.connect(crossFade.a);
+                playerB.connect(analyserB);
+                analyserB.connect(crossFade.b);
+                
+                playerA.loop = true;
+                playerB.loop = true;
+            }
+
+            // --- Event Listeners ---
+            fileA.addEventListener('change', (e) => loadFile(e, 'A'));
+            fileB.addEventListener('change', (e) => loadFile(e, 'B'));
+            startMixBtn.addEventListener('click', startMix);
+            stopBtn.addEventListener('click', stopMix);
+            crossfader.addEventListener('input', (e) => {
+                if (crossFade) {
+                    crossFade.fade.value = e.target.value;
+                }
+            });
+
+            // --- ML Model Loading ---
+            async function loadGenreModel() {
+                try {
+                    genreModel = await tf.loadGraphModel(YAMNET_MODEL_URL);
+                    mlStatus.textContent = 'Genre Model Loaded Successfully!';
+                    mlStatus.classList.remove('text-yellow-400');
+                    mlStatus.classList.add('text-green-400');
+                } catch (error) {
+                    console.error("Error loading ML model:", error);
+                    mlStatus.textContent = 'Error loading Genre Model.';
+                    mlStatus.classList.remove('text-yellow-400');
+                    mlStatus.classList.add('text-red-500');
+                }
+            }
+
+            // --- Core Functions ---
+            async function loadFile(event, deck) {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                await Tone.start(); // Ensure audio context is running
+                if (!playerA) initAudio(); // Initialize on first load
+
+                const url = URL.createObjectURL(file);
+                const player = deck === 'A' ? playerA : playerB;
+                const statusEl = deck === 'A' ? statusA : statusB;
+
+                statusEl.innerHTML = `<span class="truncate block max-w-full">${file.name}</span><span class="text-yellow-400">Loading...</span>`;
+
+                try {
+                    await player.load(url);
+                    statusEl.innerHTML = `<span class="truncate block max-w-full">${file.name}</span><span class="text-yellow-400">Analyzing BPM...</span>`;
+
+                    // Simple BPM detection
+                    const buffer = player.buffer;
+                    const detectedBpm = await analyzeBPM(buffer);
+                    
+                    if (deck === 'A') {
+                        bpmA = detectedBpm;
+                        state.A.loaded = true;
+                    } else {
+                        bpmB = detectedBpm;
+                        state.B.loaded = true;
+                    }
+
+                    statusEl.innerHTML = `<span class="truncate block max-w-full">${file.name}</span><span>${detectedBpm.toFixed(2)} BPM</span><span class="text-yellow-400">Classifying Genre...</span>`;
+
+                    // Genre Classification
+                    const genre = await classifyGenre(buffer);
+                    
+                    statusEl.innerHTML = `<span class="truncate block max-w-full">${file.name}</span><span>${detectedBpm.toFixed(2)} BPM</span><span class="text-cyan-400">${genre}</span>`;
+                    checkReadyState();
+
+                } catch (error) {
+                    console.error(`Error loading file for Deck ${deck}:`, error);
+                    statusEl.innerHTML = `<span class="text-red-500">Error loading file.</span>`;
+                }
+            }
+            
+            function checkReadyState() {
+                if (state.A.loaded && state.B.loaded) {
+                    startMixBtn.disabled = false;
+                }
+            }
+
+            function startMix() {
+                if (!state.A.loaded || !state.B.loaded) return;
+
+                // Sync BPM of Deck B to Deck A
+                const playbackRate = bpmA / bpmB;
+                playerB.playbackRate = playbackRate;
+
+                // Start both players in sync
+                const startTime = Tone.now() + 0.1;
+                playerA.start(startTime);
+                playerB.start(startTime);
+                
+                Tone.Transport.start();
+
+                // Set initial crossfade to Deck A and start auto-fade
+                crossFade.fade.value = 0;
+                crossfader.value = 0;
+                // Ramp to Deck B over 15 seconds
+                crossFade.fade.rampTo(1, 15);
+            }
+
+            function stopMix() {
+                if (playerA && playerA.state === "started") playerA.stop();
+                if (playerB && playerB.state === "started") playerB.stop();
+                Tone.Transport.stop();
+            }
+
+            // --- ML Genre Classification ---
+            async function classifyGenre(buffer) {
+                if (!genreModel) {
+                    return 'Model not ready';
+                }
+                try {
+                    // YAMNet expects audio to be 16kHz mono. We need to resample.
+                    const targetSampleRate = 16000;
+                    const offlineContext = new OfflineAudioContext(1, buffer.duration * targetSampleRate, targetSampleRate);
+                    const source = offlineContext.createBufferSource();
+                    source.buffer = buffer;
+                    source.connect(offlineContext.destination);
+                    source.start();
+                    
+                    const resampled = await offlineContext.startRendering();
+                    const audioData = resampled.getChannelData(0);
+
+                    // Run the model
+                    const waveformTensor = tf.tensor(audioData);
+                    const [scores, embeddings, spectrogram] = genreModel.execute(waveformTensor);
+                    
+                    // Find the top prediction
+                    const topScore = scores.argMax(-1).dataSync()[0];
+                    
+                    // Cleanup tensors
+                    scores.dispose();
+                    embeddings.dispose();
+                    spectrogram.dispose();
+                    waveformTensor.dispose();
+
+                    return await getGenreFromClass(topScore);
+
+                } catch (error) {
+                    console.error("Genre classification error:", error);
+                    return "Genre Unknown";
+                }
+            }
+            
+            async function getGenreFromClass(classId) {
+                // This is a small subset of YAMNet classes mapped to broader genres
+                const genreMap = {
+                    'Music': 'Music', 'Rock music': 'Rock', 'Pop music': 'Pop', 'Hip hop music': 'Hip Hop',
+                    'Electronic music': 'Electronic', 'House music': 'House', 'Techno': 'Techno',
+                    'Jazz': 'Jazz', 'Classical music': 'Classical', 'Funk': 'Funk', 'Soul music': 'Soul',
+                    'Reggae': 'Reggae', 'Synthesizer': 'Synth', 'Drum machine': 'Drums'
+                };
+                // We need to fetch the full class map to find the name for the classId
+                const response = await fetch('https://storage.googleapis.com/tfjs-models/demos/yamnet/yamnet_class_map.csv');
+                const text = await response.text();
+                const classNames = text.split('\n').slice(1).map(row => row.split(',')[2]);
+                
+                const className = classNames[classId]?.replace(/"/g, '');
+                return genreMap[className] || 'Music';
+            }
+
+
+            // --- BPM Detection (Simplified) ---
+            async function analyzeBPM(buffer) {
+                return new Promise(resolve => {
+                    const offlineContext = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
+                    const source = offlineContext.createBufferSource();
+                    source.buffer = buffer;
+
+                    // Low-pass filter to isolate kick drum frequencies
+                    const filter = offlineContext.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.value = 150;
+                    filter.Q.value = 1;
+
+                    source.connect(filter);
+                    filter.connect(offlineContext.destination);
+                    source.start(0);
+
+                    offlineContext.startRendering().then(renderedBuffer => {
+                        const data = renderedBuffer.getChannelData(0);
+                        const peaks = getPeaks(data);
+                        const intervals = getIntervals(peaks);
+                        
+                        // Group intervals to find the most common one (tempo)
+                        const tempo = groupIntervals(intervals);
+                        resolve(60 / (tempo / buffer.sampleRate));
+                    });
+                });
+            }
+            
+            function getPeaks(data) {
+                const peaks = [];
+                const threshold = 0.9;
+                for (let i = 1; i < data.length - 1; i++) {
+                    if (data[i] > data[i - 1] && data[i] > data[i+1] && data[i] > threshold) {
+                        peaks.push(i);
+                    }
+                }
+                return peaks;
+            }
+
+            function getIntervals(peaks) {
+                const intervals = [];
+                for (let i = 0; i < peaks.length - 1; i++) {
+                    intervals.push(peaks[i+1] - peaks[i]);
+                }
+                return intervals;
+            }
+            
+            function groupIntervals(intervals) {
+                const intervalCounts = {};
+                intervals.forEach(interval => {
+                    // Group intervals into tempo ranges
+                    let tempo = Math.round(interval * 0.1) / 0.1; 
+                    intervalCounts[tempo] = (intervalCounts[tempo] || 0) + 1;
+                });
+                
+                // Find the group with the highest count
+                const sortedGroups = Object.keys(intervalCounts).sort((a,b) => intervalCounts[b] - intervalCounts[a]);
+                return sortedGroups.length > 0 ? parseFloat(sortedGroups[0]) : 0;
+            }
+
+            // --- Visualization ---
+            function drawVisualizer() {
+                requestAnimationFrame(drawVisualizer);
+
+                if (analyserA) {
+                    const waveformA = analyserA.getValue();
+                    drawWaveform(ctxA, waveformA, 'rgb(59, 130, 246)'); // Blue
+                }
+                if (analyserB) {
+                    const waveformB = analyserB.getValue();
+                    drawWaveform(ctxB, waveformB, 'rgb(34, 197, 94)'); // Green
+                }
+            }
+
+            function drawWaveform(context, waveform, color) {
+                context.clearRect(0, 0, canvasWidth, canvasHeight);
+                context.beginPath();
+                context.lineWidth = 2;
+                context.strokeStyle = color;
+                
+                const sliceWidth = canvasWidth * 1.0 / waveform.length;
+                let x = 0;
+
+                for (let i = 0; i < waveform.length; i++) {
+                    const v = (waveform[i] + 1) / 2; // Normalize from [-1, 1] to [0, 1]
+                    const y = v * canvasHeight;
+
+                    if (i === 0) {
+                        context.moveTo(x, y);
+                    } else {
+                        context.lineTo(x, y);
+                    }
+                    x += sliceWidth;
+                }
+                context.stroke();
+            }
+
+            // --- Initial Load ---
+            loadGenreModel();
+            drawVisualizer(); // Start the animation loop
+        });
+    </script>
+</body>
+</html>
+
